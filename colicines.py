@@ -3,18 +3,18 @@ import pygame, sys, random, math
 pygame.init()
 WIDTH, HEIGHT = 960, 540
 WINDOW = pygame.display.set_mode((WIDTH, HEIGHT))
-pygame.display.set_caption("Mini agar.io - Extendido")
+pygame.display.set_caption("Mini agar.io - Split y Expulsar")
 CLOCK = pygame.time.Clock()
 FPS = 60
 
-WORLD_W, WORLD_H = 3000, 3000
+WORLD_W, WORLD_H = 2400, 2400
 
 def clamp(v, a, b): 
     return max(a, min(v, b))
 
 def draw_grid(surf, camx, camy):
-    surf.fill((18,20,26))
-    color = (28,32,40)
+    surf.fill((18, 20, 26))
+    color = (28, 32, 40)
     step = 64
     sx = -((camx) % step)
     sy = -((camy) % step)
@@ -24,8 +24,7 @@ def draw_grid(surf, camx, camy):
         pygame.draw.line(surf, color, (0, y), (WIDTH, y))
 
 class food:
-    __slots__ = ('x', 'y', 'r', 'col', 'vx', 'vy')
-
+    __slots__ = ('x', 'y', 'r', 'col')
     def __init__(self, x, y):
         self.x, self.y = x, y
         self.r = random.randint(3, 6)
@@ -33,9 +32,6 @@ class food:
             (255, 173, 72), (170, 240, 170), (150, 200, 255),
             (255, 120, 160), (255, 220, 120)
         ])
-        self.vx = 0.0
-        self.vy = 0.0
-
     def draw(self, surf, camx, camy):
         pygame.draw.circle(surf, self.col, (int(self.x - camx), int(self.y - camy)), self.r)
 
@@ -48,17 +44,16 @@ class blob:
         self.vy = 0.0
         self.target = None
         self.alive = True
-        self.split_timer = 0  # para fusionar luego
-
+        
     @property
     def r(self):
         return max(6, int(math.sqrt(self.mass)))
-
+    
     @property
     def speed(self):
         base = 260.0
         return max(60.0, base / (1.0 + 0.04 * self.r))
-
+    
     def move_towards(self, tx, ty, dt):
         dx, dy = tx - self.x, ty - self.y
         dist = math.hypot(dx, dy)
@@ -73,135 +68,240 @@ class blob:
         self.y += self.vy * dt
         self.x = clamp(self.x, 0, WORLD_W)
         self.y = clamp(self.y, 0, WORLD_H)
-
+        
     def draw(self, surf, camx, camy, outline=True):
         pygame.draw.circle(surf, self.color, (int(self.x - camx), int(self.y - camy)), self.r)
         if outline:
-            pygame.draw.circle(surf, (255,255,255), (int(self.x - camx), int(self.y - camy)), self.r, 2)
+            pygame.draw.circle(surf, (255, 255, 255), (int(self.x - camx), int(self.y - camy)), self.r, 2)
 
 class game:
     def __init__(self):
         self.reset()
-
+        
     def reset(self):
         random.seed()
-        self.player = blob(WORLD_W//2, WORLD_H//2, mass=600, color=(120,200,155))
+        self.player_cells = [blob(WORLD_W//2, WORLD_H//2, mass=600, color=(120,200,155))]
         self.bots = []
-        for _ in range(10):
-            bx = random.randint(50, WORLD_W-50)
-            by = random.randint(50, WORLD_H-50)
-            mass = random.randint(200,900)
-            col = random.choice([(255,144,120),(255,200,90),(170,240,170),(160,200,255),(255,120,180)])
+        for _ in range(18):
+            bx = random.randint(50, WORLD_W - 50)
+            by = random.randint(50, WORLD_H - 50)
+            mass = random.randint(200, 900)
+            col = random.choice([
+                (255, 144, 120), (255, 200, 90),
+                (170, 240, 170), (160, 200, 255),
+                (255, 120, 180)
+            ])
             self.bots.append(blob(bx, by, mass, col))
-        self.food = [food(random.randint(0, WORLD_W), random.randint(0, WORLD_H)) for _ in range(1000)]
+        self.food = [food(random.randint(0, WORLD_W), random.randint(0, WORLD_H)) for _ in range(1200)]
         self.camx, self.camy = 0.0, 0.0
         self.time = 0.0
         self.state = "play"
-        self.cells = [self.player]
-        self.last_eject = 0
+        self.split_timer = 0.0
+        self.can_merge = True
+        self.last_eject = 0.0  # cooldown para expulsar masa
+
+    @property
+    def player(self):
+        # célula más grande para centrar cámara
+        return max(self.player_cells, key=lambda b: b.mass)
 
     def update_camera(self, dt):
-        avgx = sum(b.x for b in self.cells) / len(self.cells)
-        avgy = sum(b.y for b in self.cells) / len(self.cells)
-        self.camx = avgx - WIDTH/2
-        self.camy = avgy - HEIGHT/2
+        focus = self.player
+        self.camx = focus.x - WIDTH // 2
+        self.camy = focus.y - HEIGHT // 2
         self.camx = clamp(self.camx, 0, WORLD_W - WIDTH)
         self.camy = clamp(self.camy, 0, WORLD_H - HEIGHT)
 
-    def update_cells(self, dt):
+    def spawn_food_ring(self, cx, cy, count=40, radius=120):
+        for i in range(count):
+            ang = (i / count) * math.tau
+            fx = cx + math.cos(ang) * radius + random.uniform(-10, 10)
+            fy = cy + math.sin(ang) * radius + random.uniform(-10, 10)
+            fx = clamp(fx, 0, WORLD_W)
+            fy = clamp(fy, 0, WORLD_H)
+            self.food.append(food(fx, fy))
+
+    def update_player(self, dt):
         mx, my = pygame.mouse.get_pos()
         tx = self.camx + mx
         ty = self.camy + my
-        for c in self.cells:
-            c.move_towards(tx, ty, dt)
-            if c.split_timer > 0:
-                c.split_timer -= dt
+        for p in self.player_cells:
+            p.move_towards(tx, ty, dt)
 
-    def update_food_motion(self, dt):
-        for f in self.food:
-            f.x += f.vx * dt
-            f.y += f.vy * dt
-            f.vx *= 0.9
-            f.vy *= 0.9
-
-    def eat_food(self):
-        for c in self.cells:
-            pr = c.r
-            px, py = c.x, c.y
-            remaining = []
+    def update_bots(self, dt):
+        for b in self.bots:
+            if not b.alive:
+                continue
+            threat = None
+            prey = None
+            mind = 1e9
+            for other in self.bots + self.player_cells:
+                if other is b or not other.alive:
+                    continue
+                d = abs(other.x - b.x) + abs(other.y - b.y)
+                if other.mass > b.mass * 1.35 and d < 480:
+                    if d < mind:
+                        mind = d
+                        threat = other
+                elif other.mass * 1.35 < b.mass and d < 420:
+                    prey = other
+            if threat is not None:
+                tx = b.x - (threat.x - b.x)
+                ty = b.y - (threat.y - b.y)
+            elif prey is not None:
+                tx, ty = prey.x, prey.y
+            else:
+                if b.target is None or random.random() < 0.005:
+                    b.target = (random.randint(0, WORLD_W), random.randint(0, WORLD_H))
+                tx, ty = b.target
+            b.move_towards(tx, ty, dt)
+            
+    def eat_collisions(self):
+        # comida y bots
+        for p in self.player_cells:
+            pr = p.r
+            px, py = p.x, p.y
+            remain_food = []
             for f in self.food:
-                if (f.x - px)**2 + (f.y - py)**2 < (pr + f.r)**2:
-                    c.mass += f.r * 0.9
+                if abs(f.x - px) < pr + 12 and abs(f.y - py) < pr + 12:
+                    if (f.x - px)**2 + (f.y - py)**2 < (pr + f.r)**2:
+                        p.mass += f.r * 0.9
+                    else:
+                        remain_food.append(f)
                 else:
-                    remaining.append(f)
-            self.food = remaining
+                    remain_food.append(f)
+            self.food = remain_food
+            
+        # bots
+        for p in self.player_cells:
+            px, py = p.x, p.y
+            for b in self.bots:
+                if not b.alive:
+                    continue
+                rsum = p.r - b.r * 0.95
+                if rsum <= 0:
+                    continue
+                if (b.x - px)**2 + (b.y - py)**2 < (rsum)**2 and p.mass > b.mass * 1.15:
+                    p.mass += b.mass * 0.8
+                    b.alive = False
+                    self.spawn_food_ring(b.x, b.y, count=50, radius=140)
+            for b in self.bots:
+                if not b.alive:
+                    continue
+                if b.mass >= p.mass * 1.20:
+                    if (b.x - px)**2 + (b.y - py)**2 < (b.r - p.r)**2:
+                        self.state = "gameover"
+
+    def dash(self):
+        loss = self.player.mass * 0.05
+        if self.player.mass - loss < 200:
+            return
+        self.player.mass -= loss
+        mx, my = pygame.mouse.get_pos()
+        tx, ty = self.camx + mx, self.camy + my
+        dx, dy = tx - self.player.x, ty - self.player.y
+        dist = math.hypot(dx, dy) + 1e-5
+        self.player.vx += (dx / dist) * 900
+        self.player.vy += (dy / dist) * 900
 
     def split(self):
-        if len(self.cells) >= 2:
+        if len(self.player_cells) >= 2:  # máximo 2
             return
-        c = self.player
-        if c.mass < 400:
+        p = self.player
+        if p.mass < 300:
             return
-        c.mass /= 2
-        angle = random.random() * math.tau
-        nx = c.x + math.cos(angle) * c.r * 2
-        ny = c.y + math.sin(angle) * c.r * 2
-        new_cell = blob(nx, ny, c.mass, c.color)
-        new_cell.vx = math.cos(angle) * 500
-        new_cell.vy = math.sin(angle) * 500
-        new_cell.split_timer = 6.0
-        self.cells.append(new_cell)
-
-    def check_merge(self):
-        if len(self.cells) < 2: 
-            return
-        c1, c2 = self.cells
-        if c1.split_timer <= 0 and c2.split_timer <= 0:
-            dx, dy = c2.x - c1.x, c2.y - c1.y
-            if dx*dx + dy*dy < (c1.r + c2.r)**2:
-                total_mass = c1.mass + c2.mass
-                c1.mass = total_mass
-                self.cells = [c1]
+        half_mass = p.mass / 2
+        p.mass = half_mass
+        mx, my = pygame.mouse.get_pos()
+        tx, ty = self.camx + mx, self.camy + my
+        dx, dy = tx - p.x, ty - p.y
+        dist = math.hypot(dx, dy) + 1e-5
+        nx, ny = (dx / dist), (dy / dist)
+        new_cell = blob(p.x + nx * (p.r + 10), p.y + ny * (p.r + 10), half_mass, p.color)
+        new_cell.vx = nx * 700
+        new_cell.vy = ny * 700
+        self.player_cells.append(new_cell)
+        self.can_merge = False
+        self.split_timer = 6.0  # se fusionan tras 6 segundos
 
     def eject_mass(self):
         now = pygame.time.get_ticks() / 1000
-        if now - self.last_eject < 0.5:
+        if now - self.last_eject < 1.0:  # cooldown de 1 segundo
             return
-        self.last_eject = now
-        c = self.player
-        if c.mass < 250:
+        p = self.player
+        if p.mass < 250:
             return
-        loss = c.mass * 0.03
-        c.mass -= loss
+        p.mass -= 15
         mx, my = pygame.mouse.get_pos()
         tx, ty = self.camx + mx, self.camy + my
-        dx, dy = tx - c.x, ty - c.y
+        dx, dy = tx - p.x, ty - p.y
         dist = math.hypot(dx, dy) + 1e-5
-        f = food(c.x + dx/dist*c.r, c.y + dy/dist*c.r)
-        f.vx = (dx / dist) * 350
-        f.vy = (dy / dist) * 350
+        fx = p.x + (dx / dist) * (p.r + 10)
+        fy = p.y + (dy / dist) * (p.r + 10)
+        f = food(fx, fy)
+        f.r = 8
         self.food.append(f)
+        self.last_eject = now
 
     def update(self, dt):
         if self.state != "play":
             return
-        self.update_cells(dt)
-        self.update_food_motion(dt)
-        self.eat_food()
-        self.check_merge()
-        self.update_camera(dt)
+        self.time += dt
+        self.update_player(dt)
+        self.update_bots(dt)
+        self.eat_collisions()
+        if len(self.food) < 1000:
+            for _ in range(50):
+                self.food.append(food(random.randint(0, WORLD_W), random.randint(0, WORLD_H)))
+        if all(not b.alive for b in self.bots):
+            self.state = "win"
 
+        # manejar fusión
+        if not self.can_merge:
+            self.split_timer -= dt
+            if self.split_timer <= 0:
+                if len(self.player_cells) == 2:
+                    a, b = self.player_cells
+                    a.mass += b.mass
+                    self.player_cells = [a]
+                self.can_merge = True
+
+        self.update_camera(dt)
+                
     def draw(self):
         draw_grid(WINDOW, self.camx, self.camy)
         for f in self.food:
-            f.draw(WINDOW, self.camx, self.camy)
-        for c in self.cells:
-            c.draw(WINDOW, self.camx, self.camy)
+            fx, fy = int(f.x - self.camx), int(f.y - self.camy)
+            if -10 <= fx <= WIDTH + 10 and -10 < fy < HEIGHT + 10:
+                f.draw(WINDOW, self.camx, self.camy)
+                
+        for b in self.bots:
+            if b.alive:
+                b.draw(WINDOW, self.camx, self.camy)
+                
+        for p in self.player_cells:
+            p.draw(WINDOW, self.camx, self.camy)
+                
+        pygame.draw.rect(WINDOW, (25, 28, 36), (10, 10, 420, 90), border_radius=8)
         font = pygame.font.SysFont(None, 24)
-        pygame.draw.rect(WINDOW, (25,28,36), (10,10,300,60), border_radius=8)
-        WINDOW.blit(font.render(f"Mass: {int(sum(c.mass for c in self.cells))}", True, (235,235,245)), (20,18))
-        WINDOW.blit(font.render("[Q] split | [E] eject | [ESC] salir", True, (200,220,255)), (20,42))
-
+        WINDOW.blit(font.render(f"Mass: {int(sum(p.mass for p in self.player_cells))}", True, (235, 235, 245)), (20, 18))
+        WINDOW.blit(font.render("mouse = mover / SPACE = dash (-5%)", True, (200, 220, 255)), (20, 44))
+        WINDOW.blit(font.render("[Q] dividir (6s) / [E] expulsar masa (1s)", True, (200, 220, 255)), (20, 66))
+                
+        if self.state == "gameover":
+            t = pygame.font.SysFont(None, 48).render("GAME OVER", True, (255, 120, 120))
+            r = t.get_rect(center=(WIDTH // 2, HEIGHT // 2 - 10))
+            WINDOW.blit(t, r)
+            s = pygame.font.SysFont(None, 28).render("[R] reiniciar - [ESC] salir", True, (235, 235, 245))
+            WINDOW.blit(s, (WIDTH // 2 - s.get_width() // 2, HEIGHT // 2 + 26))
+                    
+        if self.state == "win":
+            t = pygame.font.SysFont(None, 48).render("¡GANASTE!", True, (235, 235, 245))
+            r = t.get_rect(center=(WIDTH // 2, HEIGHT // 2 - 10))
+            WINDOW.blit(t, r)
+            s = pygame.font.SysFont(None, 28).render("Todos los bots fueron derrotados", True, (235, 235, 245))
+            WINDOW.blit(s, (WIDTH // 2 - s.get_width() // 2, HEIGHT // 2 + 26))
+                    
     def run(self):
         running = True
         while running:
@@ -212,9 +312,13 @@ class game:
                 elif e.type == pygame.KEYDOWN:
                     if e.key == pygame.K_ESCAPE:
                         running = False
-                    elif e.key == pygame.K_q:
+                    elif e.key == pygame.K_r:
+                        self.reset()
+                    elif e.key == pygame.K_SPACE and self.state == "play":
+                        self.dash()
+                    elif e.key == pygame.K_q and self.state == "play":
                         self.split()
-                    elif e.key == pygame.K_e:
+                    elif e.key == pygame.K_e and self.state == "play":
                         self.eject_mass()
             self.update(dt)
             self.draw()
